@@ -1,0 +1,201 @@
+---
+title: "NYPD Shooting Data Incident Analysis"
+author: "iffig"
+date: '2022-06-14'
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Objective
+
+Through this data set I will be looking to answer if and how time plays a factor in these shooting incidents in New York City. Primarily I will try to answer the following questions: 
+
+- When historically have these shootings occurred during the day?
+- On what day of the week are shootings most likely to occur?
+- Does time of year affect the number of shootings? 
+- How have these trends shifted through the years? 
+- What is the overall trend in shooting incidents throughout the life of the data set?
+
+# Reviewing the Dataset 
+```{r import_project_libraries, echo =F, include=F}
+library(tidyverse)
+library(lubridate)
+library(scales)
+```
+For this analysis the following the data was retrieved from: 
+https://data.cityofnewyork.us/Public-Safety/NYPD-Shooting-Incident-Data-Historic-/833y-fsy8
+
+```{r import_incident_data, echo=F}
+data_url <-"https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+incident_data <-read.csv(data_url)
+```
+
+## Raw Data Summary
+
+The following `summary` and `glimpse` commands give a good overview of the columns of data and some general statistics on the data (max/min/mean/median/data_type/length/etc.). 
+
+```{r readincident_dataNYPD, echo=TRUE}
+summary(incident_data)
+glimpse(incident_data)
+```
+
+On initial glance it seems the data set provides us with an id, date/time, and location information for each incident. Each incident record also has information about the perpetrator and victims. It is important to note (per the footnotes), a single incident key can represent multiple victims, so the key can be duplicate. 
+
+The landing page and data footnotes PDF are helpful in providing additional information on the various columns in the data set: 
+
+- https://data.cityofnewyork.us/Public-Safety/NYPD-Shooting-Incident-Data-Historic-/833y-fsy8
+- https://data.cityofnewyork.us/api/views/833y-fsy8/files/e4e3d86c-348f-4a16-a17f-19480c089429?download=true&filename=NYPD_Shootings_Incident_Level_Data_Footnotes.pdf
+
+# Data Cleaning
+## Updating Variable Types
+ 
+- Convert OCCUR_DATE from String to Date object
+
+```{r types, echo=TRUE}
+incident_data <- incident_data %>% 
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+```
+
+## Removing Columns
+Looking at the summary and glimpse of the data, it would likely make sense to drop most of the location data, except for `Boro` as the lat/lon and x/y coordinates would take more interpretation to become relevant. 
+
+- Lon_Lat
+- Latitude
+- Longitude
+- X_COORD_CD
+- Y_COORD_CD
+
+```{r Clean Columns, echo=TRUE}
+incident_data <- incident_data %>% select(-c(Lon_Lat,X_COORD_CD,Y_COORD_CD, Latitude, Longitude))
+```
+
+## Identifying Missing Data
+
+In the glimpse above, notice a handful of variables have "" as the input to a field. To make this dataset more meaningful, updating those to something more consistent with the rest of the dataset would be helpful. The following code can be used to identify columns that had missing data:
+```{r findMissing, echo=TRUE}
+colNames <- names(incident_data)
+for (i in colNames){
+  values <- unique(incident_data[[i]])
+  missing <- "" %in% values
+  if( missing == TRUE){
+    print(i)
+  }
+}
+```
+
+## Handling Missing Data 
+
+The following code describes the possible entries for each of the columns with missing data:
+
+```{r describe_missing, echo=TRUE}
+unique(incident_data[["LOCATION_DESC"]])
+unique(incident_data[["PERP_AGE_GROUP"]])
+unique(incident_data[["PERP_SEX"]])
+unique(incident_data[["PERP_RACE"]])
+```
+
+To handle the missing points, here are the updates that will be made: 
+
+- LOCATION_DESC: This already has a NONE category, we can update the empty entries to be NONE 
+- PERP_AGE_GROUP: This already has an UNKNOWN category, we can update the empty entries to be UNKNOWN
+- PERP_SEX:This already has an UNKNOWN (U) category, we can update the empty entries to be U
+- PERP_RACE: This already has an UNKNOWN category, we can update the empty entries to be UNKNOWN
+
+```{r missingData, echo=TRUE}
+incident_data <- incident_data %>%
+  mutate(LOCATION_DESC = ifelse(LOCATION_DESC == "", "NONE", LOCATION_DESC)) %>%
+  mutate(PERP_AGE_GROUP = ifelse(PERP_AGE_GROUP == "", "UNKNOWN", PERP_AGE_GROUP)) %>%
+  mutate(PERP_SEX = ifelse(PERP_SEX == "", "U", PERP_SEX)) %>%
+  mutate(PERP_RACE = ifelse(PERP_RACE == "", "UNKNOWN", PERP_RACE)) 
+
+incident_data <- incident_data %>%
+  filter(PERP_AGE_GROUP != "1020", PERP_AGE_GROUP != "940", PERP_AGE_GROUP != "224")
+```
+
+Now the data set has been updated to reflect more consistently when certain details about an incident are unknown. Because there is still useful information in these rows, they will remain in the data set.
+
+# Time Analysis
+
+## Yearly Trends
+```{r incidentsPerYear, echo=F}
+incident_data <- incident_data %>%
+    mutate(year=year(OCCUR_DATE), md = yday(OCCUR_DATE))
+
+incidents_by_year <- incident_data %>%
+  group_by(year) %>%
+  summarise(incidents = n())
+
+mod <- lm(incidents ~ year, data = incidents_by_year)
+
+incidents_by_year <- incidents_by_year %>% mutate(pred = predict(mod)) 
+
+incidents_by_year %>% 
+  ggplot() + 
+  xlab("Year") + 
+  ylab("Incidents") +
+  geom_point(aes(x = year, y = incidents, color = "blue", )) + 
+  geom_line(aes(x = year, y = pred, color = "red")) +
+  scale_color_discrete(name="Legend", labels=c("Actual","Predicted")) + 
+  labs(title = "Shootings Per Year Model")
+
+summary(mod)
+
+```
+
+## Time of Year
+```{r timeOfYear, echo=F}
+incidents_by_time <- incident_data %>%
+  mutate(OCCUR_TIME = hms(OCCUR_TIME))%>%
+  mutate(hour = hour(OCCUR_TIME)) %>%
+  group_by(hour) %>%
+  summarise(incidents = n()) 
+
+incidents_by_time %>%
+  ggplot(aes(x = hour, y = incidents)) + 
+  geom_bar(stat="identity") +
+  xlab("Hour of Day") + 
+  ylab("Incident Count") +
+  theme(legend.position = "bottom", 
+        axis.text.x = element_text(angle = 90)) + 
+  labs(title = "Incidents by Time of Day")
+```
+
+## Time of Day 
+```{r timeOfDay, echo=F}
+incidents_by_date <- incident_data %>%
+  group_by(md) %>%
+  summarise(incidents = n())
+
+incidents_by_date %>%
+  ggplot(aes(x = md, y = incidents)) + 
+  geom_point() +
+  xlab("Day of Year") + 
+  ylab("Incident Count") +
+  theme(legend.position = "bottom", 
+        axis.text.x = element_text(angle = 90)) + 
+  labs(title = "Incidents by Day of Year")
+```
+
+## Day of Week 
+```{r dayOfWeek, echo=F}
+incidents_by_weekday <- incident_data %>%
+  mutate(w = wday(OCCUR_DATE, label=TRUE)) %>%
+  group_by(w) %>%
+  summarise(incidents = n())
+
+incidents_by_weekday %>%
+  ggplot(aes(x = w, y = incidents)) + 
+  geom_point() +
+  xlab("Day of Week") + 
+  ylab("Incident Count") +
+  theme(legend.position = "bottom", 
+        axis.text.x = element_text(angle = 90)) + 
+  labs(title = "Incidents by Weekday")
+```
+
+# Conclusions
+
+In the above analysis there were several interesting findings. It does appear that time does have some influence over the number of incidents that occur. When looking at time of day, incidents tend to occur with more frequency in the early morning hours or in the later hours of the day. There is a steady decline from 12am to about 8am then steadily increases through the end of the day. Time of year seems to have a pattern as well. There is a steady arc of increasing incidents from January through about July, that begins to decline from July through the end of the year. Similarly, for days of the week, you see peaks on the weekend days and a steady decline as the week starts, and a steady rise heading into the weekend. I found it interesting that most of these data points have the similar arc patterns. 
+
+The other finding of interest was in looking at the trends of shooting incidents from 2006 to present. Rates of shootings has been on a pretty steady decline since the beginning of the data set. But in the past year, shootings nearly doubled, seeming to coincide with the onset of the COVID-19 pandemic. 
